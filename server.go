@@ -85,7 +85,7 @@ func (s *Server) RegisterFunc(method string, f interface{}) (err error) {
 	}
 
 	// register type
-	err = RegisterGobFuncTypes(f)
+	err = s.codec.OnRegister(method, f)
 	if err != nil {
 		return err
 	}

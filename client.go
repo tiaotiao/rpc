@@ -59,7 +59,7 @@ func (c *Client) MakeClient(client interface{}) error {
 	return nil
 }
 
-func (c *Client) MakeFunc(rpcName string, fptr interface{}) (err error) {
+func (c *Client) MakeFunc(method string, fptr interface{}) (err error) {
 	defer func() {
 		if e := recover(); e != nil {
 			if er, ok := e.(error); ok {
@@ -79,19 +79,19 @@ func (c *Client) MakeFunc(rpcName string, fptr interface{}) (err error) {
 	// f must return error as last param
 	nOut := fn.Type().NumOut()
 	if nOut == 0 || fn.Type().Out(nOut-1).Kind() != reflect.Interface {
-		err = fmt.Errorf("%s return final output param must be error interface", rpcName)
+		err = fmt.Errorf("%s return final output param must be error interface", method)
 		return
 	}
 
 	_, b := fn.Type().Out(nOut - 1).MethodByName("Error")
 	if !b {
-		err = fmt.Errorf("%s return final output param must be error interface", rpcName)
+		err = fmt.Errorf("%s return final output param must be error interface", method)
 		return
 	}
 
 	// make func
 	f := func(in []reflect.Value) []reflect.Value {
-		out := c.call(fn, rpcName, in)
+		out := c.call(fn, method, in)
 		return out
 	}
 
@@ -99,7 +99,7 @@ func (c *Client) MakeFunc(rpcName string, fptr interface{}) (err error) {
 	fn.Set(v)
 
 	// register type
-	err = RegisterGobFuncTypes(v.Interface())
+	err = c.codec.OnRegister(method, v.Interface())
 	if err != nil {
 		return err
 	}
