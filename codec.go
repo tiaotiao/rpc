@@ -10,7 +10,7 @@ type Codec interface {
 
 	Read() (req *Request, resp *Response, err error)
 
-	OnRegister(method string, f interface{}) error
+	OnRegister(method string, in []interface{}, out interface{}) error
 
 	Close() error
 }
