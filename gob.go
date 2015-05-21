@@ -4,7 +4,6 @@ import (
 	"encoding/gob"
 	"fmt"
 	"io"
-	"reflect"
 )
 
 type GobCodec struct {
@@ -48,48 +47,7 @@ func (c *GobCodec) Read() (req *Request, resp *Response, err error) {
 	return
 }
 
-func (c *GobCodec) OnRegister(method string, f interface{}) error {
-	return c.registerFuncTypes(f)
-}
-
-func (c *GobCodec) Close() error {
-	return c.conn.Close()
-}
-
-//////////////////////////////////////////////////////////////////
-
-func (c *GobCodec) registerFuncTypes(f interface{}) (err error) {
-
-	t := reflect.TypeOf(f)
-
-	for i := 0; i < t.NumIn(); i++ {
-		it := t.In(i)
-		v := c.makeValue(it)
-		if v == nil {
-			continue
-		}
-		err := c.registerType(v.Interface())
-		if err != nil {
-			return err
-		}
-	}
-
-	for i := 0; i < t.NumOut(); i++ {
-		ot := t.Out(i)
-		v := c.makeValue(ot)
-		if v == nil {
-			continue
-		}
-		err := c.registerType(v.Interface())
-		if err != nil {
-			return err
-		}
-	}
-
-	return
-}
-
-func (c *GobCodec) registerType(v interface{}) (err error) {
+func (c *GobCodec) OnRegister(method string, in []interface{}, out interface{}) (err error) {
 	defer func() {
 		if e := recover(); e != nil {
 			if er, ok := e.(error); ok {
@@ -104,28 +62,14 @@ func (c *GobCodec) registerType(v interface{}) (err error) {
 		}
 	}()
 
-	gob.Register(v)
+	for _, v := range in {
+		gob.Register(v)
+	}
+	gob.Register(out)
 
-	return nil
+	return
 }
 
-func (c *GobCodec) makeValue(t reflect.Type) *reflect.Value {
-	var v reflect.Value
-	if v.Kind() == reflect.Ptr || v.Kind() == reflect.UnsafePointer {
-		t = t.Elem()
-	}
-
-	switch t.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface:
-		return nil
-	case reflect.Map:
-		v = reflect.MakeMap(t)
-	case reflect.Slice, reflect.Array:
-		v = reflect.MakeSlice(t, 0, 0)
-	case reflect.Struct, reflect.String:
-		v = reflect.Zero(t)
-	default:
-		v = reflect.Zero(t)
-	}
-	return &v
+func (c *GobCodec) Close() error {
+	return c.conn.Close()
 }

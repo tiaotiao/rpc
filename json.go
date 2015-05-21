@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"reflect"
 	"sync"
 )
 
@@ -31,6 +32,7 @@ func NewJsonCodec(conn io.ReadWriteCloser) *JsonCodec {
 	c.dec = json.NewDecoder(conn)
 	c.inVals = make(map[string][]interface{})
 	c.outVals = make(map[string]interface{})
+	c.reqIds = make(map[int64]string)
 	return c
 }
 
@@ -72,25 +74,26 @@ func (c *JsonCodec) Read() (req *Request, resp *Response, err error) {
 		c.inLock.RUnlock()
 		if !ok {
 			// method is not found, bad request
-			err = fmt.Errorf("method is not found. %#v", r)
+			err = fmt.Errorf("method is not found. %v", r)
 			return
 		}
 
 		if len(r.RawParams) != len(inVals) {
-			err = fmt.Errorf("num of params not match %v != %v. %#v", len(r.RawParams), len(inVals), r)
+			err = fmt.Errorf("num of params not match %v != %v. %v", len(r.RawParams), len(inVals), r)
 			return
 		}
 
 		// unmarshal params
 		params := make([]interface{}, len(inVals))
 		for i, raw := range r.RawParams {
-			in := inVals[i]
-			err = json.Unmarshal(raw, &in)
+			val := inVals[i]
+
+			val, err = c.unmarshal(raw, val)
 			if err != nil {
-				// json error
-				return
+				return // json error
 			}
-			params[i] = in
+
+			params[i] = val
 		}
 
 		req = &Request{Id: r.Id, Method: r.Method, Params: params}
@@ -102,7 +105,7 @@ func (c *JsonCodec) Read() (req *Request, resp *Response, err error) {
 		c.reqLock.Unlock()
 		if !ok {
 			// id is not found, bad response
-			err = fmt.Errorf("id is not found, bad response. %#v", r)
+			err = fmt.Errorf("id is not found, bad response. %v", r)
 			return
 		}
 
@@ -110,19 +113,33 @@ func (c *JsonCodec) Read() (req *Request, resp *Response, err error) {
 		result, ok := c.outVals[method]
 		c.outLock.RUnlock()
 		if !ok {
-			return fmt.Errorf("method not found. %v, %#v", method, r)
+			err = fmt.Errorf("method not found. %v, %v", method, r)
+			return
 		}
 
 		// unmarshal result
-		err = json.Unmarshal(r.RawResult, &result)
-		if err != nil {
-			return
+		if result != nil {
+			result, err = c.unmarshal(r.RawResult, result)
+			if err != nil {
+				return
+			}
 		}
 
 		resp = &Response{Id: r.Id, Result: result, Error: r.Error}
 	}
 
 	return
+}
+
+func (c *JsonCodec) unmarshal(raw json.RawMessage, val interface{}) (res interface{}, err error) {
+	t := reflect.TypeOf(val)
+	pv := reflect.New(t) // pointer of t
+
+	err = json.Unmarshal(raw, pv.Interface())
+	if err != nil {
+		return nil, err
+	}
+	return pv.Elem().Interface(), nil
 }
 
 func (c *JsonCodec) OnRegister(method string, in []interface{}, out interface{}) error {

@@ -99,7 +99,7 @@ func (c *Client) MakeFunc(method string, fptr interface{}) (err error) {
 	fn.Set(v)
 
 	// register type
-	err = c.codec.OnRegister(method, v.Interface())
+	err = OnRegisterFunc(c.codec, method, v.Interface())
 	if err != nil {
 		return err
 	}
