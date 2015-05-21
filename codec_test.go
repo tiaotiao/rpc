@@ -7,12 +7,12 @@ import (
 	"testing"
 )
 
-// func TestGobCodec(t *testing.T) {
-// 	var buf = new(buffer)
-// 	c := NewGobCodec(buf)
-// 	s := NewGobCodec(buf)
-// 	testCodec(c, s, t)
-// }
+func TestGobCodec(t *testing.T) {
+	var buf = new(buffer)
+	c := NewGobCodec(buf)
+	s := NewGobCodec(buf)
+	testCodec(c, s, t)
+}
 
 func TestJsonCodec(t *testing.T) {
 	var buf = new(buffer)
@@ -31,7 +31,7 @@ func testCodec(c, s Codec, t *testing.T) {
 
 	// empty
 	requestAndResponse(c, s, nil, nil, nil, t)
-	requestAndResponse(c, s, nil, []interface{}{}, nil, t)
+	requestAndResponse(c, s, []interface{}{}, nil, nil, t)
 
 	// array
 	requestAndResponse(c, s, []interface{}{[]int64{10, 20, 30}}, 60, nil, t)
@@ -123,16 +123,16 @@ func writeAndCheckResponse(c, s Codec, id int64, method string, result interface
 		t.Fatal(err.Error())
 	}
 	if req != nil {
-		t.Fatal("should not be req:", req)
+		t.Fatal("should not be req:", method, req)
 	}
 
 	// check response
 	if resp.Id != id {
-		t.Fatal("id not match")
+		t.Fatal("id not match", method)
 	}
 
 	if err = equal(result, resp.Result); err != nil {
-		t.Fatal(err.Error(), resp, id, result, e)
+		t.Fatal(fmt.Sprintf("%v [%v %v]: %#v != %#v, %v", err.Error(), method, id, resp, result, e))
 	}
 	if resp.Error != nil && resp.Error.Error() != e.Error() {
 		t.Fatal("Error: resp.Error", resp)

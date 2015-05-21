@@ -25,7 +25,7 @@ type JsonCodec struct {
 	reqLock sync.RWMutex
 }
 
-func NewJsonCodec(conn io.ReadWriteCloser) *JsonCodec {
+func NewJsonCodec(conn io.ReadWriteCloser) Codec {
 	c := new(JsonCodec)
 	c.conn = conn
 	c.enc = json.NewEncoder(conn)
@@ -69,17 +69,20 @@ func (c *JsonCodec) Read() (req *Request, resp *Response, err error) {
 	}
 
 	if r.Method != "" { // it's a request
+		req = &Request{Id: r.Id, Method: r.Method}
+
+		// looking for method
 		c.inLock.RLock()
 		inVals, ok := c.inVals[r.Method]
 		c.inLock.RUnlock()
 		if !ok {
 			// method is not found, bad request
-			err = fmt.Errorf("method is not found. %v", r)
+			err = ErrMethodNotFound
 			return
 		}
 
 		if len(r.RawParams) != len(inVals) {
-			err = fmt.Errorf("num of params not match %v != %v. %v", len(r.RawParams), len(inVals), r)
+			err = ErrInvalidParams
 			return
 		}
 
@@ -90,15 +93,19 @@ func (c *JsonCodec) Read() (req *Request, resp *Response, err error) {
 
 			val, err = c.unmarshal(raw, val)
 			if err != nil {
+				err = ErrInvalidParams
 				return // json error
 			}
 
 			params[i] = val
 		}
 
-		req = &Request{Id: r.Id, Method: r.Method, Params: params}
+		req.Params = params
 
 	} else { // it's a response
+		resp = &Response{Id: r.Id, Error: r.Error}
+
+		// looking for method
 		c.reqLock.Lock()
 		method, ok := c.reqIds[r.Id]
 		delete(c.reqIds, r.Id)
@@ -113,7 +120,7 @@ func (c *JsonCodec) Read() (req *Request, resp *Response, err error) {
 		result, ok := c.outVals[method]
 		c.outLock.RUnlock()
 		if !ok {
-			err = fmt.Errorf("method not found. %v, %v", method, r)
+			err = ErrMethodNotFound
 			return
 		}
 
@@ -125,7 +132,7 @@ func (c *JsonCodec) Read() (req *Request, resp *Response, err error) {
 			}
 		}
 
-		resp = &Response{Id: r.Id, Result: result, Error: r.Error}
+		resp.Result = result
 	}
 
 	return
@@ -143,7 +150,6 @@ func (c *JsonCodec) unmarshal(raw json.RawMessage, val interface{}) (res interfa
 }
 
 func (c *JsonCodec) OnRegister(method string, in []interface{}, out interface{}) error {
-	// TODO validate
 
 	c.inLock.Lock()
 	c.inVals[method] = in

@@ -49,16 +49,20 @@ func (r *Rpc) Close() error {
 func (r *Rpc) run() error {
 	for {
 		req, resp, err := r.codec.Read()
-		if err != nil {
+
+		if req != nil {
+			err = r.Server.onRequest(req, err)
+
+		} else if resp != nil {
+			err = r.Client.onResponse(resp)
+
+		} else {
+			println("rpc read error: ", err.Error())
 			break
 		}
 
-		if req != nil {
-			err = r.Server.onRequest(req)
-		} else if resp != nil {
-			err = r.Client.onResponse(resp)
-		}
 		if err != nil {
+			println("rpc run error: ", err.Error())
 			break
 		}
 	}

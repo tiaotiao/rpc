@@ -11,6 +11,9 @@ import (
 
 func TestRpc(t *testing.T) {
 	var err error
+
+	// init rpc
+
 	cliRpc, svrRpc := newTestRpc(t)
 
 	err = svrRpc.Server.Register(&svrHandler{})
@@ -19,15 +22,14 @@ func TestRpc(t *testing.T) {
 	}
 
 	var cli = cliCaller{}
-	err = cliRpc.Client.MakeClient(&cli)
+	err = cliRpc.Client.MakeProto(&cli)
 	if err != nil {
 		t.Fatal(err.Error())
 	}
 
-	if cli.Echo == nil {
-		t.Fatal("func is nil")
-	}
+	////////////////////////////////////////
 
+	// echo
 	str := "abcde"
 	ret, err := cli.Echo(str)
 	if err != nil {
@@ -37,7 +39,38 @@ func TestRpc(t *testing.T) {
 		t.Fatal("not match", str, ret)
 	}
 
-	// TODO more tests
+	// basic
+	ok, err := cli.Basic(1001, "basic", true, 1.2)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	if !ok {
+		t.Fatal("basic err")
+	}
+
+	// bad request
+	err = cli.BadRequest("my bad")
+	if err != nil {
+		if err.Error() != "bad request" {
+			t.Fatal("bad request", err.Error())
+		}
+	}
+
+	// no output
+	err = cli.NoOutput(10, 20)
+	if err != nil {
+		t.Fatal("no output error:", err.Error())
+	}
+
+	// struct
+	s, err := cli.Struct(st{1, "do something"})
+	if err != nil {
+		t.Fatal("struct", err.Error())
+	}
+	if s == nil || s.Id != 2 || s.Msg != "ok" {
+		t.Fatal("struct", s)
+	}
+
 }
 
 type svrHandler struct {
@@ -47,8 +80,35 @@ func (h *svrHandler) Echo(s string) (string, error) {
 	return s, nil
 }
 
+func (h *svrHandler) Basic(id int64, name string, b bool, f float64) (bool, error) {
+	return true, nil
+}
+
+func (h *svrHandler) BadRequest(name string) error {
+	return fmt.Errorf("bad request")
+}
+
+func (h *svrHandler) NoOutput(ids []int64) error {
+	return nil
+}
+
+func (h *svrHandler) Struct(s st) (*st, error) {
+	s.Id += 1
+	s.Msg = "ok"
+	return &s, nil
+}
+
+type st struct {
+	Id  int64
+	Msg string
+}
+
 type cliCaller struct {
-	Echo func(i string) (string, error)
+	Echo       func(i string) (string, error)
+	NoOutput   func(...int64) error
+	Basic      func(id int64, name string, b bool, f float64) (bool, error)
+	BadRequest func(string) error
+	Struct     func(s st) (*st, error)
 }
 
 /////////////////////////////////////////////////////////////////
@@ -58,9 +118,17 @@ func TestRpcCallRemote(t *testing.T) {
 	cliRpc, svrRpc := newTestRpc(t)
 
 	// register func
-	err = svrRpc.Server.RegisterFunc("addFunc", func(a, b int) (int, error) {
+	fn := func(a, b int) (int, error) {
 		return a + b, nil
-	})
+	}
+	var cn func(a, b int) (int, error)
+
+	err = cliRpc.Client.MakeFunc("addFunc", &cn)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+
+	err = svrRpc.Server.RegisterFunc("addFunc", fn)
 	if err != nil {
 		t.Fatal(err.Error())
 	}

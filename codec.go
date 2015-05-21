@@ -17,7 +17,7 @@ type Codec interface {
 	Close() error
 }
 
-var newDefCodec func(io.ReadWriteCloser) Codec = NewGobCodec
+var newDefCodec func(io.ReadWriteCloser) Codec = NewJsonCodec
 
 func SetDefaultCodec(newCodec func(io.ReadWriteCloser) Codec) {
 	newDefCodec = newCodec
@@ -26,13 +26,35 @@ func SetDefaultCodec(newCodec func(io.ReadWriteCloser) Codec) {
 func OnRegisterFunc(c Codec, method string, f interface{}) error {
 	t := reflect.TypeOf(f)
 
+	// must be a Func
+	if t.Kind() != reflect.Func {
+		return fmt.Errorf("'%v' is not a function", method)
+	}
+
+	// must return the last param as an error
+	nOut := t.NumOut()
+	if nOut == 0 || t.Out(nOut-1).Kind() != reflect.Interface {
+		return fmt.Errorf("the last output param must be an error")
+	}
+	_, b := t.Out(nOut - 1).MethodByName("Error")
+	if !b {
+		return fmt.Errorf("the last output param must be an error")
+	}
+
+	// get inputs
 	var in []interface{}
 	for i := 0; i < t.NumIn(); i++ {
 		it := t.In(i)
+		switch it.Kind() {
+		case reflect.Chan, reflect.Func, reflect.UnsafePointer:
+			return fmt.Errorf("input param [%v] %v type not support", i, it.Kind().String())
+		}
+
 		v := reflect.New(it).Elem()
 		in = append(in, v.Interface())
 	}
 
+	// get outputs
 	var out interface{}
 	numOut := t.NumOut() - 1 // ignore the last output param which is known as an error type
 	if numOut > 1 {
@@ -44,28 +66,8 @@ func OnRegisterFunc(c Codec, method string, f interface{}) error {
 		out = v.Interface()
 	}
 
+	// register to codec
 	return c.OnRegister(method, in, out)
-}
-
-func (c *GobCodec) makeValue(t reflect.Type) *reflect.Value {
-	var v reflect.Value
-	if v.Kind() == reflect.Ptr || v.Kind() == reflect.UnsafePointer {
-		t = t.Elem()
-	}
-
-	switch t.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface:
-		return nil
-	case reflect.Map:
-		v = reflect.MakeMap(t)
-	case reflect.Slice, reflect.Array:
-		v = reflect.MakeSlice(t, 0, 0)
-	case reflect.Struct, reflect.String:
-		v = reflect.Zero(t)
-	default:
-		v = reflect.Zero(t)
-	}
-	return &v
 }
 
 ////////////////////////////////////////////////////////////////////////////////

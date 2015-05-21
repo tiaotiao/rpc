@@ -54,10 +54,6 @@ func (c *GobCodec) OnRegister(method string, in []interface{}, out interface{}) 
 				err = fmt.Errorf("register type: %v", er.Error())
 				return
 			}
-			if s, ok := e.(string); ok {
-				err = fmt.Errorf("register type: %v", s)
-				return
-			}
 			err = fmt.Errorf("register type: %v", e)
 		}
 	}()
@@ -65,7 +61,9 @@ func (c *GobCodec) OnRegister(method string, in []interface{}, out interface{}) 
 	for _, v := range in {
 		gob.Register(v)
 	}
-	gob.Register(out)
+	if out != nil {
+		gob.Register(out)
+	}
 
 	return
 }

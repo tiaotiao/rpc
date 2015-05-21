@@ -9,30 +9,33 @@ import (
 )
 
 type Client struct {
-	codec   Codec
-	reqid   int64
-	reqMap  map[int64]chan *Response
-	lock    sync.RWMutex
+	codec Codec
+
+	reqid int64
+
+	reqMap map[int64]chan *Response
+	lock   sync.RWMutex
+
 	timeout time.Duration
 }
 
 func newClientWithCodec(codec Codec) *Client {
 	c := new(Client)
 	c.codec = codec
-	c.reqid = 0
+	c.reqid = 1000
 	c.reqMap = make(map[int64]chan *Response)
 	c.timeout = time.Second * 5
 	return c
 }
 
-func (c *Client) MakeClient(client interface{}) error {
-	t := reflect.TypeOf(client)
-	v := reflect.ValueOf(client)
+func (c *Client) MakeProto(proto interface{}) error {
+	t := reflect.TypeOf(proto)
+	v := reflect.ValueOf(proto)
 	if v.Kind() != reflect.Ptr {
-		return fmt.Errorf("Arg 'client' must be a point.")
+		return fmt.Errorf("must be a pointer")
 	}
 	if v.Elem().Kind() != reflect.Struct {
-		return fmt.Errorf("Arg 'client' must be a point of struct! eg. &myrpc{}")
+		return fmt.Errorf("must be a pointer of struct")
 	}
 
 	var count int
@@ -53,7 +56,7 @@ func (c *Client) MakeClient(client interface{}) error {
 	}
 
 	if count <= 0 {
-		return fmt.Errorf("Make rpc failed, no func field been found")
+		return fmt.Errorf("no func field been found")
 	}
 
 	return nil
@@ -76,33 +79,18 @@ func (c *Client) MakeFunc(method string, fptr interface{}) (err error) {
 
 	fn := reflect.ValueOf(fptr).Elem()
 
-	// f must return error as last param
-	nOut := fn.Type().NumOut()
-	if nOut == 0 || fn.Type().Out(nOut-1).Kind() != reflect.Interface {
-		err = fmt.Errorf("%s return final output param must be error interface", method)
-		return
-	}
-
-	_, b := fn.Type().Out(nOut - 1).MethodByName("Error")
-	if !b {
-		err = fmt.Errorf("%s return final output param must be error interface", method)
-		return
-	}
-
-	// make func
-	f := func(in []reflect.Value) []reflect.Value {
-		out := c.call(fn, method, in)
-		return out
-	}
-
-	v := reflect.MakeFunc(fn.Type(), f)
-	fn.Set(v)
-
 	// register type
-	err = OnRegisterFunc(c.codec, method, v.Interface())
+	err = OnRegisterFunc(c.codec, method, fn.Interface())
 	if err != nil {
 		return err
 	}
+
+	// make func
+	v := reflect.MakeFunc(fn.Type(), func(in []reflect.Value) []reflect.Value {
+		out := c.reflectCall(fn, method, in)
+		return out
+	})
+	fn.Set(v)
 
 	return
 }
@@ -118,30 +106,33 @@ func (c *Client) CallRemote(method string, params []interface{}) (interface{}, e
 	}
 
 	id := atomic.AddInt64(&c.reqid, 1)
-	ch := make(chan *Response)
+	ch := make(chan *Response, 1)
 
+	// record request id
 	c.lock.Lock()
 	c.reqMap[id] = ch
 	c.lock.Unlock()
 
-	err := codec.WriteRequest(id, method, params)
-
-	if err != nil {
+	defer func() {
+		// delete request id
 		c.lock.Lock()
 		delete(c.reqMap, id)
 		c.lock.Unlock()
+	}()
+
+	// send data
+	err := codec.WriteRequest(id, method, params)
+	if err != nil {
 		return nil, err
 	}
 
 	var resp *Response
 
+	// wait for response
 	if c.timeout > 0 {
 		select {
 		case resp = <-ch:
 		case <-time.After(c.timeout):
-			c.lock.Lock()
-			delete(c.reqMap, id)
-			c.lock.Unlock()
 			return nil, ErrTimeout
 		}
 	} else {
@@ -151,17 +142,18 @@ func (c *Client) CallRemote(method string, params []interface{}) (interface{}, e
 	if resp.Error != nil {
 		return nil, resp.Error
 	}
-
 	return resp.Result, nil
 }
 
 func (c *Client) onResponse(resp *Response) error {
 	c.lock.Lock()
 	ch, ok := c.reqMap[resp.Id]
-	delete(c.reqMap, resp.Id)
+	delete(c.reqMap, resp.Id) // delete here to avoid duplicated response
 	c.lock.Unlock()
 
-	if !ok { // TODO error
+	if !ok {
+		// TODO report an error or not?
+		println("Error: rpc client id not found", resp.Id, resp.Result, resp.Error)
 		return nil
 	}
 
@@ -170,7 +162,7 @@ func (c *Client) onResponse(resp *Response) error {
 	return nil
 }
 
-func (c *Client) call(fn reflect.Value, method string, inArgs []reflect.Value) []reflect.Value {
+func (c *Client) reflectCall(fn reflect.Value, method string, inArgs []reflect.Value) []reflect.Value {
 	params := make([]interface{}, len(inArgs))
 	for i := 0; i < len(inArgs); i++ {
 		params[i] = inArgs[i].Interface()
@@ -190,12 +182,22 @@ func (c *Client) returnCall(fn reflect.Value, out interface{}, err error) []refl
 	}
 
 	outv := reflect.ValueOf(out)
-	if outv.Kind() == reflect.Array { // array
+	if outv.Kind() == reflect.Array {
+		// multi outputs (never happen for now)
 		for i := 0; i < outv.Len(); i++ {
 			outs = append(outs, outv.Index(i))
 		}
 	} else {
-		outs = append(outs, outv)
+		if out == nil {
+			if outNum == 2 {
+				outs = append(outs, outv) // result is nill
+			} else {
+				// no output (except the error)
+			}
+		} else {
+			outs = append(outs, outv)
+		}
+
 	}
 	outs = append(outs, reflect.Zero(fn.Type().Out(outNum-1))) // zero value for last error
 

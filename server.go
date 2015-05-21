@@ -72,18 +72,6 @@ func (s *Server) RegisterFunc(method string, f interface{}) (err error) {
 		return fmt.Errorf("'%v' is not a function", method)
 	}
 
-	// f must return error as last param
-	nOut := t.NumOut()
-	if nOut == 0 || t.Out(nOut-1).Kind() != reflect.Interface {
-		err = fmt.Errorf("must return error as the last output param")
-		return
-	}
-	_, b := t.Out(nOut - 1).MethodByName("Error")
-	if !b {
-		err = fmt.Errorf("must return error as the last output param")
-		return
-	}
-
 	// register type
 	err = OnRegisterFunc(s.codec, method, f)
 	if err != nil {
@@ -112,14 +100,16 @@ func (s *Server) Handle(method string, params []interface{}) (result interface{}
 			}
 		}
 	}()
+
+	// find method
 	s.lock.RLock()
 	f, ok := s.funcs[method]
 	s.lock.RUnlock()
-
 	if !ok {
 		return nil, ErrMethodNotFound
 	}
 
+	// make input values
 	inValues := make([]reflect.Value, len(params))
 	for i := 0; i < len(params); i++ {
 		if params[i] == nil {
@@ -129,11 +119,13 @@ func (s *Server) Handle(method string, params []interface{}) (result interface{}
 		}
 	}
 
+	// check params
 	err = s.checkParams(f.Type(), inValues)
 	if err != nil {
 		return nil, ErrInvalidParams
 	}
 
+	// reflect call func
 	outs := f.Call(inValues)
 
 	return s.returnResult(outs)
@@ -144,6 +136,7 @@ func (s *Server) returnResult(outs []reflect.Value) (result interface{}, err err
 		return nil, fmt.Errorf("len(outs) <= 0")
 	}
 
+	// check the last error param
 	lastErr := outs[len(outs)-1].Interface()
 	if lastErr != nil {
 		if e, ok := lastErr.(error); !ok {
@@ -158,9 +151,12 @@ func (s *Server) returnResult(outs []reflect.Value) (result interface{}, err err
 	if len(outs) == 0 {
 		return nil, nil
 	}
+
 	if len(outs) == 1 {
 		return outs[0].Interface(), nil
 	}
+
+	// multi outputs (nerver happen for now)
 	results := make([]interface{}, len(outs))
 	for i := 0; i < len(outs); i++ {
 		results[i] = outs[i].Interface()
@@ -168,8 +164,12 @@ func (s *Server) returnResult(outs []reflect.Value) (result interface{}, err err
 	return results, nil
 }
 
-func (s *Server) onRequest(req *Request) (err error) {
-	result, err := s.Handle(req.Method, req.Params)
+func (s *Server) onRequest(req *Request, err error) error {
+	var result interface{}
+	if err == nil {
+		result, err = s.Handle(req.Method, req.Params)
+	}
+
 	e, ok := err.(*Error)
 	if !ok {
 		if err != nil {
