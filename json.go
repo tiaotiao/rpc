@@ -8,19 +8,14 @@ import (
 	"sync"
 )
 
-//////////////////////////////////////////////////////////////////
+// //////////////////////////////////////////////////////////////////
 
 type JsonCodec struct {
 	conn io.ReadWriteCloser
 	enc  *json.Encoder
 	dec  *json.Decoder
 
-	inVals map[string][]interface{} // map[method][]paramTypes
-	inLock sync.RWMutex
-
-	outVals map[string]interface{} // map[method]resultType
-	outLock sync.RWMutex
-
+	methods *Methods
 	reqIds  map[int64]string // map[reqId]method
 	reqLock sync.RWMutex
 }
@@ -30,79 +25,84 @@ func NewJsonCodec(conn io.ReadWriteCloser) Codec {
 	c.conn = conn
 	c.enc = json.NewEncoder(conn)
 	c.dec = json.NewDecoder(conn)
-	c.inVals = make(map[string][]interface{})
-	c.outVals = make(map[string]interface{})
+
 	c.reqIds = make(map[int64]string)
 	return c
 }
 
-func (c *JsonCodec) WriteRequest(id int64, method string, params []interface{}) (err error) {
-	d := rpcdata{Id: id, Method: method, Params: params}
+func (c *JsonCodec) WriteRequest(req *Request) (err error) {
+	d := struct {
+		Id     int64       `json:"id"`
+		Method string      `json:"method"`
+		Params interface{} `json:"params"`
+	}{
+		req.Id, req.Method, req.Params,
+	}
+
 	err = c.enc.Encode(&d) // encode and write
 	if err != nil {
 		return err
 	}
+
 	// record the request id
 	c.reqLock.Lock()
-	c.reqIds[id] = method
+	c.reqIds[req.Id] = req.Method
 	c.reqLock.Unlock()
+
 	return err
 }
 
-func (c *JsonCodec) WriteResponse(id int64, result interface{}, e *Error) (err error) {
-	d := rpcdata{Id: id, Result: result, Error: e}
-	err = c.enc.Encode(&d) // encode and write
+func (c *JsonCodec) WriteResponse(resp *Response) (err error) {
+	d := struct {
+		Id     int64       `json:"id"`
+		Result interface{} `json:"result"`
+		Error  *Error      `json:"error,omitempty"`
+	}{
+		resp.Id, resp.Result, resp.Error,
+	}
+
+	err = c.enc.Encode(&d)
+
 	return err
 }
 
 func (c *JsonCodec) Read() (req *Request, resp *Response, err error) {
 	var r = struct {
-		Id        int64             `json:"id"`
-		Method    string            `json:"method"`
-		RawParams []json.RawMessage `json:"params"`
-		RawResult json.RawMessage   `json:"result"`
-		Error     *Error            `json:"error"`
+		Id        int64           `json:"id"`
+		Method    string          `json:"method"`
+		RawParams json.RawMessage `json:"params"`
+		RawResult json.RawMessage `json:"result"`
+		Error     *Error          `json:"error"`
 	}{}
-	err = c.dec.Decode(&r) // read and decode
+
+	err = c.dec.Decode(&r)
 	if err != nil {
 		return
 	}
 
 	if r.Method != "" { // it's a request
+
 		req = &Request{Id: r.Id, Method: r.Method}
 
 		// looking for method
-		c.inLock.RLock()
-		inVals, ok := c.inVals[r.Method]
-		c.inLock.RUnlock()
+		in, ok := c.methods.In(r.Method)
 		if !ok {
 			// method is not found, bad request
 			err = ErrMethodNotFound
 			return
 		}
 
-		if len(r.RawParams) != len(inVals) {
+		// unmarshal params
+		in, err = c.unmarshal(r.RawParams, in)
+		if err != nil {
 			err = ErrInvalidParams
 			return
 		}
 
-		// unmarshal params
-		params := make([]interface{}, len(inVals))
-		for i, raw := range r.RawParams {
-			val := inVals[i]
-
-			val, err = c.unmarshal(raw, val)
-			if err != nil {
-				err = ErrInvalidParams
-				return // json error
-			}
-
-			params[i] = val
-		}
-
-		req.Params = params
+		req.Params = in
 
 	} else { // it's a response
+
 		resp = &Response{Id: r.Id, Error: r.Error}
 
 		// looking for method
@@ -116,29 +116,30 @@ func (c *JsonCodec) Read() (req *Request, resp *Response, err error) {
 			return
 		}
 
-		c.outLock.RLock()
-		result, ok := c.outVals[method]
-		c.outLock.RUnlock()
+		out, ok := c.methods.Out(method)
 		if !ok {
 			err = ErrMethodNotFound
 			return
 		}
 
 		// unmarshal result
-		if result != nil {
-			result, err = c.unmarshal(r.RawResult, result)
-			if err != nil {
-				return
-			}
+		out, err = c.unmarshal(r.RawResult, out)
+		if err != nil {
+			err = ErrInvalidParams
+			return
 		}
 
-		resp.Result = result
+		resp.Result = out
 	}
 
 	return
 }
 
 func (c *JsonCodec) unmarshal(raw json.RawMessage, val interface{}) (res interface{}, err error) {
+	if val == nil {
+		return nil, nil
+	}
+
 	t := reflect.TypeOf(val)
 	pv := reflect.New(t) // pointer of t
 
@@ -149,29 +150,8 @@ func (c *JsonCodec) unmarshal(raw json.RawMessage, val interface{}) (res interfa
 	return pv.Elem().Interface(), nil
 }
 
-func (c *JsonCodec) OnRegister(method string, in []interface{}, out interface{}) error {
-
-	c.inLock.Lock()
-	c.inVals[method] = in
-	c.inLock.Unlock()
-
-	c.outLock.Lock()
-	c.outVals[method] = out
-	c.outLock.Unlock()
-
-	return nil
-}
-
 func (c *JsonCodec) Close() error {
 	return c.conn.Close()
 }
 
-type jsonProto struct {
-	Id        int64           `json:"id"`
-	Method    string          `json:"method,omitempty"`
-	RawParams json.RawMessage `json:"params,omitempty"`
-	Params    []interface{}   `json:"-"`
-	RawResult json.RawMessage `json:"result,omitempty"`
-	Result    interface{}     `json:"-"`
-	Error     *Error          `json:"error,omitempty"`
-}
+var _ Codec = (*JsonCodec)(nil)

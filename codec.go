@@ -1,82 +1,70 @@
 package rpc
 
-import (
-	"fmt"
-	"io"
-	"reflect"
-)
+import ()
 
 type Codec interface {
-	WriteRequest(id int64, method string, params []interface{}) (err error)
-	WriteResponse(id int64, result interface{}, e *Error) (err error)
+	WriteRequest(*Request) (err error)
+	WriteResponse(*Response) (err error)
 
 	Read() (req *Request, resp *Response, err error)
-
-	OnRegister(method string, in []interface{}, out interface{}) error
 
 	Close() error
 }
 
-var newDefCodec func(io.ReadWriteCloser) Codec = NewJsonCodec
+// func OnRegisterFunc(c Codec, method string, f interface{}) error {
+// 	t := reflect.TypeOf(f)
 
-func SetDefaultCodec(newCodec func(io.ReadWriteCloser) Codec) {
-	newDefCodec = newCodec
-}
+// 	// must be a Func
+// 	if t.Kind() != reflect.Func {
+// 		return fmt.Errorf("'%v' is not a function", method)
+// 	}
 
-func OnRegisterFunc(c Codec, method string, f interface{}) error {
-	t := reflect.TypeOf(f)
+// 	// must return the last param as an error
+// 	nOut := t.NumOut()
+// 	if nOut == 0 || t.Out(nOut-1).Kind() != reflect.Interface {
+// 		return fmt.Errorf("the last output param must be an error")
+// 	}
+// 	_, b := t.Out(nOut - 1).MethodByName("Error")
+// 	if !b {
+// 		return fmt.Errorf("the last output param must be an error")
+// 	}
 
-	// must be a Func
-	if t.Kind() != reflect.Func {
-		return fmt.Errorf("'%v' is not a function", method)
-	}
+// 	// get inputs
+// 	var in []interface{}
+// 	for i := 0; i < t.NumIn(); i++ {
+// 		it := t.In(i)
+// 		switch it.Kind() {
+// 		case reflect.Chan, reflect.Func, reflect.UnsafePointer:
+// 			return fmt.Errorf("input param [%v] %v type not support", i, it.Kind().String())
+// 		}
 
-	// must return the last param as an error
-	nOut := t.NumOut()
-	if nOut == 0 || t.Out(nOut-1).Kind() != reflect.Interface {
-		return fmt.Errorf("the last output param must be an error")
-	}
-	_, b := t.Out(nOut - 1).MethodByName("Error")
-	if !b {
-		return fmt.Errorf("the last output param must be an error")
-	}
+// 		v := reflect.New(it).Elem()
+// 		in = append(in, v.Interface())
+// 	}
 
-	// get inputs
-	var in []interface{}
-	for i := 0; i < t.NumIn(); i++ {
-		it := t.In(i)
-		switch it.Kind() {
-		case reflect.Chan, reflect.Func, reflect.UnsafePointer:
-			return fmt.Errorf("input param [%v] %v type not support", i, it.Kind().String())
-		}
+// 	// get outputs
+// 	var out interface{}
+// 	numOut := t.NumOut() - 1 // ignore the last output param which is known as an error type
+// 	if numOut > 1 {
+// 		return fmt.Errorf("too many output params")
+// 	}
+// 	if numOut == 1 {
+// 		it := t.Out(0)
+// 		v := reflect.New(it).Elem()
+// 		out = v.Interface()
+// 	}
 
-		v := reflect.New(it).Elem()
-		in = append(in, v.Interface())
-	}
+// 	// register to codec
+// 	return c.OnRegister(method, in, out)
+// }
 
-	// get outputs
-	var out interface{}
-	numOut := t.NumOut() - 1 // ignore the last output param which is known as an error type
-	if numOut > 1 {
-		return fmt.Errorf("too many output params")
-	}
-	if numOut == 1 {
-		it := t.Out(0)
-		v := reflect.New(it).Elem()
-		out = v.Interface()
-	}
+// ////////////////////////////////////////////////////////////////////////////////
 
-	// register to codec
-	return c.OnRegister(method, in, out)
-}
-
-////////////////////////////////////////////////////////////////////////////////
-
-// Combine Request and Response for decode
-type rpcdata struct {
-	Id     int64         `json:"id"`
-	Method string        `json:"method,omitempty"`
-	Params []interface{} `json:"params,omitempty"`
-	Result interface{}   `json:"result,omitempty"`
-	Error  *Error        `json:"error,omitempty"`
-}
+// // Combine Request and Response for decode
+// type rpcdata struct {
+// 	Id     int64         `json:"id"`
+// 	Method string        `json:"method,omitempty"`
+// 	Params []interface{} `json:"params,omitempty"`
+// 	Result interface{}   `json:"result,omitempty"`
+// 	Error  *Error        `json:"error,omitempty"`
+// }
