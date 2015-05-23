@@ -42,6 +42,10 @@ func NewRpcWithCodec(codec Codec) *Rpc {
 	return r
 }
 
+func (r *Rpc) Read() (*Request, *Response, error) {
+	return r.codec.Read()
+}
+
 func (r *Rpc) Close() error {
 	return r.codec.Close()
 }
