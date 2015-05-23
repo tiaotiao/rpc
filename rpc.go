@@ -6,38 +6,29 @@ import (
 	"io"
 	"net"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
 type Rpc struct {
 	codec Codec
 
-	methods *Methods
+	Methods *Methods
 
 	// server
 	handler Handler
 
 	// client
+	reqId   int64
 	reqMap  map[int64]chan *Response
 	reqLock sync.RWMutex
 
-	reqId   int64
-	timeout time.Duration
+	Timeout time.Duration
 }
 
 type Handler func(method string, input interface{}) (output interface{}, err error)
 
 func Dial(network, address string) (*Rpc, error) {
 	conn, err := net.Dial(network, address)
-	if err != nil {
-		return nil, err
-	}
-	return NewRpc(conn), nil
-}
-
-func Accept(l net.Listener) (*Rpc, error) {
-	conn, err := l.Accept()
 	if err != nil {
 		return nil, err
 	}
@@ -52,13 +43,13 @@ func NewRpc(conn io.ReadWriteCloser) *Rpc {
 func NewRpcCodec(codec Codec) *Rpc {
 	r := new(Rpc)
 	r.codec = codec
-	r.methods = newMethods()
+	r.Methods = newMethods()
 	r.reqMap = make(map[int64]chan *Response)
-	r.timeout = time.Second * 10
+	r.Timeout = time.Second * 10
 
 	jsonCodec, ok := codec.(*JsonCodec)
 	if ok {
-		jsonCodec.methods = r.methods
+		jsonCodec.methods = r.Methods
 	}
 	return r
 }
@@ -75,8 +66,12 @@ func (r *Rpc) Read() (*Request, *Response, error) {
 	return r.codec.Read()
 }
 
-func (r *Rpc) SetTimeout(timeout time.Duration) {
-	r.timeout = timeout
+func (r *Rpc) RegisterMethod(method string, in interface{}, out interface{}) error {
+	return r.Methods.Register(method, in, out)
+}
+
+func (r *Rpc) UnregisterMethod(method string) error {
+	return r.Methods.Unregister(method)
 }
 
 func (r *Rpc) SetHandler(handler Handler) {
@@ -84,12 +79,11 @@ func (r *Rpc) SetHandler(handler Handler) {
 }
 
 func (r *Rpc) CallRemote(method string, input interface{}) (interface{}, error) {
-	id := atomic.AddInt64(&r.reqId, 1)
-	ch := make(chan *Response, 1)
-
-	// record request id
 	r.reqLock.Lock()
-	r.reqMap[id] = ch
+	r.reqId += 1
+	id := r.reqId
+	ch := make(chan *Response, 1)
+	r.reqMap[id] = ch // record request id
 	r.reqLock.Unlock()
 
 	defer func() {
@@ -107,10 +101,10 @@ func (r *Rpc) CallRemote(method string, input interface{}) (interface{}, error) 
 	var resp *Response
 
 	// wait for response
-	if r.timeout > 0 {
+	if r.Timeout > 0 {
 		select {
 		case resp = <-ch:
-		case <-time.After(r.timeout):
+		case <-time.After(r.Timeout):
 			return nil, ErrTimeout
 		}
 	} else {
@@ -200,8 +194,6 @@ func (r *Rpc) Close() error {
 
 ///////////////////////////////////////////////////////////////////////////////
 
-///////////////////////////////////////////////////////////
-
 type Request struct {
 	Id     int64
 	Method string
@@ -226,8 +218,6 @@ func NewError(code int, msg string) *Error {
 func (e *Error) Error() string {
 	return e.Message
 }
-
-///////////////////////////////////////////////////////////
 
 var (
 	CodeParseError     = -32700

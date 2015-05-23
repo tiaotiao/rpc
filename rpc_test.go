@@ -1,217 +1,154 @@
 package rpc
 
-// import (
-// 	"fmt"
-// 	"net"
-// 	"reflect"
-// 	"sync"
-// 	"testing"
-// 	"time"
-// )
+import (
+	"net"
+	"sync"
+	"testing"
+	"time"
+)
 
-// func TestRpc(t *testing.T) {
-// 	var err error
+func TestRpc(t *testing.T) {
+	var err error
 
-// 	// init rpc
+	cli, svr := newTestRpc(t)
 
-// 	cliRpc, svrRpc := newTestRpc(t)
+	if cli == nil || svr == nil {
+		t.Fatal("rpc is nil", cli, svr)
+	}
 
-// 	err = svrRpc.Server.Register(&svrHandler{})
-// 	if err != nil {
-// 		t.Fatal(err.Error())
-// 	}
+	handler := func(method string, params interface{}) (result interface{}, err error) {
+		switch method {
 
-// 	var cli = cliCaller{}
-// 	err = cliRpc.Client.MakeProto(&cli)
-// 	if err != nil {
-// 		t.Fatal(err.Error())
-// 	}
+		case "echo":
+			return params, nil
 
-// 	////////////////////////////////////////
+		case "sum":
+			var x int
+			a := params.([]int)
+			for _, n := range a {
+				x += n
+			}
+			return x, nil
 
-// 	// echo
-// 	str := "abcde"
-// 	ret, err := cli.Echo(str)
-// 	if err != nil {
-// 		t.Fatal(err.Error())
-// 	}
-// 	if ret != str {
-// 		t.Fatal("not match", str, ret)
-// 	}
+		case "struct":
+			e := params.(*Error)
+			return e.Code, nil
 
-// 	// basic
-// 	ok, err := cli.Basic(1001, "basic", true, 1.2)
-// 	if err != nil {
-// 		t.Fatal(err.Error())
-// 	}
-// 	if !ok {
-// 		t.Fatal("basic err")
-// 	}
+		default:
+			return nil, ErrMethodNotFound
+		}
+	}
 
-// 	// bad request
-// 	err = cli.BadRequest("my bad")
-// 	if err != nil {
-// 		if err.Error() != "bad request" {
-// 			t.Fatal("bad request", err.Error())
-// 		}
-// 	}
+	// handler
+	svr.SetHandler(handler)
 
-// 	// no output
-// 	err = cli.NoOutput(10, 20)
-// 	if err != nil {
-// 		t.Fatal("no output error:", err.Error())
-// 	}
+	// register methods
+	register(cli, svr, "echo", "string", "string", t)
+	register(cli, svr, "sum", []int{0, 0}, 0, t)
+	register(cli, svr, "struct", (*Error)(nil), 0, t)
 
-// 	// struct
-// 	s, err := cli.Struct(st{1, "do something"})
-// 	if err != nil {
-// 		t.Fatal("struct", err.Error())
-// 	}
-// 	if s == nil || s.Id != 2 || s.Msg != "ok" {
-// 		t.Fatal("struct", s)
-// 	}
+	var result interface{}
 
-// }
+	// echo
+	result, err = cli.CallRemote("echo", "hello world")
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	s, ok := result.(string)
+	if !ok {
+		t.Fatal("result is not string", result)
+	}
+	if s != "hello world" {
+		t.Fatal("echo not match", s)
+	}
 
-// type svrHandler struct {
-// }
+	// sum
+	result, err = cli.CallRemote("sum", []int{10, 20})
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	x, ok := result.(int)
+	if !ok {
+		t.Fatal("result type error", result)
+	}
+	if x != 30 {
+		t.Fatal("sum error", x)
+	}
 
-// func (h *svrHandler) Echo(s string) (string, error) {
-// 	return s, nil
-// }
+	// struct
+	result, err = cli.CallRemote("struct", NewError(1001, "error"))
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	e, ok := result.(int)
+	if !ok {
+		t.Fatal("result type error", result)
+	}
+	if e != 1001 {
+		t.Fatal("struct error", e)
+	}
+}
 
-// func (h *svrHandler) Basic(id int64, name string, b bool, f float64) (bool, error) {
-// 	return true, nil
-// }
+func register(cli, svr *Rpc, method string, in, out interface{}, t *testing.T) {
+	var err error
+	err = cli.RegisterMethod(method, in, out)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	err = svr.RegisterMethod(method, in, out)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+}
 
-// func (h *svrHandler) BadRequest(name string) error {
-// 	return fmt.Errorf("bad request")
-// }
+func newTestRpc(t *testing.T) (*Rpc, *Rpc) {
+	cliConn, svrConn, err := newTestConn()
+	if err != nil {
+		t.Fatal(err.Error())
+	}
 
-// func (h *svrHandler) NoOutput(ids []int64) error {
-// 	return nil
-// }
+	cliRpc := NewRpc(cliConn)
+	svrRpc := NewRpc(svrConn)
 
-// func (h *svrHandler) Struct(s st) (*st, error) {
-// 	s.Id += 1
-// 	s.Msg = "ok"
-// 	return &s, nil
-// }
+	go cliRpc.Run()
+	go svrRpc.Run()
 
-// type st struct {
-// 	Id  int64
-// 	Msg string
-// }
+	return cliRpc, svrRpc
+}
 
-// type cliCaller struct {
-// 	Echo       func(i string) (string, error)
-// 	NoOutput   func(...int64) error
-// 	Basic      func(id int64, name string, b bool, f float64) (bool, error)
-// 	BadRequest func(string) error
-// 	Struct     func(s st) (*st, error)
-// }
+func newTestConn() (net.Conn, net.Conn, error) {
+	var addr = "127.0.0.1:9462"
 
-// /////////////////////////////////////////////////////////////////
+	lis, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, nil, err
+	}
 
-// func TestRpcCallRemote(t *testing.T) {
-// 	var err error
-// 	cliRpc, svrRpc := newTestRpc(t)
+	var cliConn net.Conn
+	var svrConn net.Conn
+	var sc net.Conn
+	var lock sync.RWMutex
 
-// 	// register func
-// 	fn := func(a, b int) (int, error) {
-// 		return a + b, nil
-// 	}
-// 	var cn func(a, b int) (int, error)
+	go func() {
+		c, _ := lis.Accept()
+		lis.Close()
 
-// 	err = cliRpc.Client.MakeFunc("addFunc", &cn)
-// 	if err != nil {
-// 		t.Fatal(err.Error())
-// 	}
+		lock.Lock()
+		sc = c
+		lock.Unlock()
+	}()
 
-// 	err = svrRpc.Server.RegisterFunc("addFunc", fn)
-// 	if err != nil {
-// 		t.Fatal(err.Error())
-// 	}
+	cliConn, err = net.DialTimeout("tcp", addr, time.Second)
 
-// 	// call
-// 	err = callAndCheck(cliRpc, "addFunc", []interface{}{10, 20}, 30, nil)
-// 	if err != nil {
-// 		t.Fatal(err.Error())
-// 	}
+	<-time.After(time.Millisecond * 10)
 
-// 	// call invalid params
-// 	err = callAndCheck(cliRpc, "addFunc", []interface{}{"ab", 20}, nil, ErrInvalidParams)
-// 	if err != nil {
-// 		t.Fatal(err.Error())
-// 	}
-// 	err = callAndCheck(cliRpc, "addFunc", []interface{}{10, 20, 30}, nil, ErrInvalidParams)
-// 	if err != nil {
-// 		t.Fatal(err.Error())
-// 	}
+	lock.RLock()
+	svrConn = sc
+	lock.RUnlock()
 
-// 	// method not found
-// 	err = callAndCheck(cliRpc, "subFunc", []interface{}{30, 20}, nil, ErrMethodNotFound)
-// 	if err != nil {
-// 		t.Fatal(err.Error())
-// 	}
-// }
+	if err != nil {
+		return nil, nil, err
+	}
 
-// func callAndCheck(r *Rpc, method string, params []interface{}, expect interface{}, expErr error) error {
-// 	out, err := r.Client.CallRemote(method, params)
-// 	if !reflect.DeepEqual(err, expErr) {
-// 		return fmt.Errorf("expErr not match: %#v, %#v", expErr, err)
-// 	}
-// 	if !reflect.DeepEqual(expect, out) {
-// 		return fmt.Errorf("result not match: %#v, %#v", out, expect)
-// 	}
-// 	return nil
-// }
-
-// func newTestRpc(t *testing.T) (*Rpc, *Rpc) {
-// 	cliConn, svrConn, err := newTestConn()
-// 	if err != nil {
-// 		t.Fatal(err.Error())
-// 	}
-
-// 	cliRpc := NewRpc(cliConn)
-// 	svrRpc := NewRpc(svrConn)
-
-// 	return cliRpc, svrRpc
-// }
-
-// func newTestConn() (net.Conn, net.Conn, error) {
-// 	var addr = "127.0.0.1:9462"
-
-// 	lis, err := net.Listen("tcp", addr)
-// 	if err != nil {
-// 		return nil, nil, err
-// 	}
-
-// 	var cliConn net.Conn
-// 	var svrConn net.Conn
-// 	var sc net.Conn
-// 	var lock sync.RWMutex
-
-// 	go func() {
-// 		c, _ := lis.Accept()
-// 		lis.Close()
-
-// 		lock.Lock()
-// 		sc = c
-// 		lock.Unlock()
-// 	}()
-
-// 	cliConn, err = net.DialTimeout("tcp", addr, time.Second)
-
-// 	<-time.After(time.Millisecond * 10)
-
-// 	lock.RLock()
-// 	svrConn = sc
-// 	lock.RUnlock()
-
-// 	if err != nil {
-// 		return nil, nil, err
-// 	}
-
-// 	return cliConn, svrConn, nil
-// }
+	return cliConn, svrConn, nil
+}
