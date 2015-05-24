@@ -2,7 +2,7 @@ package rpc
 
 import (
 	"errors"
-	// "fmt"
+	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -11,8 +11,6 @@ import (
 
 type Rpc struct {
 	codec Codec
-
-	Methods *Methods
 
 	// server
 	handler Handler
@@ -43,14 +41,9 @@ func NewRpc(conn io.ReadWriteCloser) *Rpc {
 func NewRpcCodec(codec Codec) *Rpc {
 	r := new(Rpc)
 	r.codec = codec
-	r.Methods = newMethods()
 	r.reqMap = make(map[int64]chan *Response)
 	r.Timeout = time.Second * 10
 
-	jsonCodec, ok := codec.(*JsonCodec)
-	if ok {
-		jsonCodec.methods = r.Methods
-	}
 	return r
 }
 
@@ -66,19 +59,15 @@ func (r *Rpc) Read() (*Request, *Response, error) {
 	return r.codec.Read()
 }
 
-func (r *Rpc) RegisterMethod(method string, in interface{}, out interface{}) error {
-	return r.Methods.Register(method, in, out)
-}
-
-func (r *Rpc) UnregisterMethod(method string) error {
-	return r.Methods.Unregister(method)
+func (r *Rpc) ParseValue(param interface{}, dst interface{}) error {
+	return r.codec.ParseValue(param, dst)
 }
 
 func (r *Rpc) SetHandler(handler Handler) {
 	r.handler = handler
 }
 
-func (r *Rpc) CallRemote(method string, input interface{}) (interface{}, error) {
+func (r *Rpc) CallRemote(method string, input interface{}, output interface{}) error {
 	r.reqLock.Lock()
 	r.reqId += 1
 	id := r.reqId
@@ -95,7 +84,7 @@ func (r *Rpc) CallRemote(method string, input interface{}) (interface{}, error) 
 	// send data
 	err := r.codec.WriteRequest(&Request{id, method, input})
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	var resp *Response
@@ -105,7 +94,7 @@ func (r *Rpc) CallRemote(method string, input interface{}) (interface{}, error) 
 		select {
 		case resp = <-ch:
 		case <-time.After(r.Timeout):
-			return nil, ErrTimeout
+			return ErrTimeout
 		}
 	} else {
 		resp = <-ch
@@ -113,9 +102,16 @@ func (r *Rpc) CallRemote(method string, input interface{}) (interface{}, error) 
 
 	// return
 	if resp.Error != nil {
-		return nil, resp.Error
+		return resp.Error
 	}
-	return resp.Result, nil
+
+	// parse value
+	err = r.codec.ParseValue(resp.Result, output)
+	if err != nil {
+		return NewError(CodeParseError, err.Error())
+	}
+
+	return nil
 }
 
 func (r *Rpc) onResponse(resp *Response, err error) error {
@@ -126,7 +122,7 @@ func (r *Rpc) onResponse(resp *Response, err error) error {
 
 	if !ok {
 		// TODO report an error or not?
-		println("Error: rpc client id not found", resp.Id, resp.Result, resp.Error)
+		fmt.Println("Error: rpc client id not found", resp.Id, resp.Result, resp.Error)
 		return nil
 	}
 

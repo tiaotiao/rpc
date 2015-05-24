@@ -7,6 +7,7 @@ type Codec interface {
 	WriteResponse(*Response) (err error)
 
 	Read() (req *Request, resp *Response, err error)
+	ParseValue(val interface{}, dst interface{}) error
 
 	Close() error
 }
@@ -56,15 +57,4 @@ type Codec interface {
 
 // 	// register to codec
 // 	return c.OnRegister(method, in, out)
-// }
-
-// ////////////////////////////////////////////////////////////////////////////////
-
-// // Combine Request and Response for decode
-// type rpcdata struct {
-// 	Id     int64         `json:"id"`
-// 	Method string        `json:"method,omitempty"`
-// 	Params []interface{} `json:"params,omitempty"`
-// 	Result interface{}   `json:"result,omitempty"`
-// 	Error  *Error        `json:"error,omitempty"`
 // }

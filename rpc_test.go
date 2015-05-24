@@ -20,18 +20,33 @@ func TestRpc(t *testing.T) {
 		switch method {
 
 		case "echo":
-			return params, nil
+			var msg string
+			err = cli.ParseValue(params, &msg)
+			if err != nil {
+				return nil, err
+			}
+			return msg, nil
 
 		case "sum":
+			var a []int
+			err = cli.ParseValue(params, &a)
+			if err != nil {
+				return nil, err
+			}
+
 			var x int
-			a := params.([]int)
 			for _, n := range a {
 				x += n
 			}
 			return x, nil
 
 		case "struct":
-			e := params.(*Error)
+			var e *Error
+			err = cli.ParseValue(params, &e)
+			if err != nil {
+				return nil, err
+			}
+
 			return e.Code, nil
 
 		default:
@@ -42,62 +57,34 @@ func TestRpc(t *testing.T) {
 	// handler
 	svr.SetHandler(handler)
 
-	// register methods
-	register(cli, svr, "echo", "string", "string", t)
-	register(cli, svr, "sum", []int{0, 0}, 0, t)
-	register(cli, svr, "struct", (*Error)(nil), 0, t)
-
-	var result interface{}
-
 	// echo
-	result, err = cli.CallRemote("echo", "hello world")
+	var s string = ""
+	err = cli.CallRemote("echo", "hello world", &s)
 	if err != nil {
 		t.Fatal(err.Error())
-	}
-	s, ok := result.(string)
-	if !ok {
-		t.Fatal("result is not string", result)
 	}
 	if s != "hello world" {
 		t.Fatal("echo not match", s)
 	}
 
 	// sum
-	result, err = cli.CallRemote("sum", []int{10, 20})
+	var x int
+	err = cli.CallRemote("sum", []int{10, 20}, &x)
 	if err != nil {
 		t.Fatal(err.Error())
-	}
-	x, ok := result.(int)
-	if !ok {
-		t.Fatal("result type error", result)
 	}
 	if x != 30 {
 		t.Fatal("sum error", x)
 	}
 
 	// struct
-	result, err = cli.CallRemote("struct", NewError(1001, "error"))
+	var e int
+	err = cli.CallRemote("struct", NewError(1001, "error"), &e)
 	if err != nil {
 		t.Fatal(err.Error())
-	}
-	e, ok := result.(int)
-	if !ok {
-		t.Fatal("result type error", result)
 	}
 	if e != 1001 {
 		t.Fatal("struct error", e)
-	}
-}
-
-func register(cli, svr *Rpc, method string, in, out interface{}, t *testing.T) {
-	var err error
-	err = cli.RegisterMethod(method, in, out)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
-	err = svr.RegisterMethod(method, in, out)
-	if err != nil {
-		t.Fatal(err.Error())
 	}
 }
 
