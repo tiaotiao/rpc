@@ -1,6 +1,10 @@
 package rpc
 
-import ()
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+)
 
 type Codec interface {
 	WriteRequest(*Request) (err error)
@@ -12,49 +16,90 @@ type Codec interface {
 	Close() error
 }
 
-// func OnRegisterFunc(c Codec, method string, f interface{}) error {
-// 	t := reflect.TypeOf(f)
+///////////////////////////////////////////////////////////////////////////////
 
-// 	// must be a Func
-// 	if t.Kind() != reflect.Func {
-// 		return fmt.Errorf("'%v' is not a function", method)
-// 	}
+type jsonCodec struct {
+	conn io.ReadWriteCloser
+	enc  *json.Encoder
+	dec  *json.Decoder
+}
 
-// 	// must return the last param as an error
-// 	nOut := t.NumOut()
-// 	if nOut == 0 || t.Out(nOut-1).Kind() != reflect.Interface {
-// 		return fmt.Errorf("the last output param must be an error")
-// 	}
-// 	_, b := t.Out(nOut - 1).MethodByName("Error")
-// 	if !b {
-// 		return fmt.Errorf("the last output param must be an error")
-// 	}
+func NewJsonCodec(conn io.ReadWriteCloser) Codec {
+	c := new(jsonCodec)
+	c.conn = conn
+	c.enc = json.NewEncoder(conn)
+	c.dec = json.NewDecoder(conn)
+	return c
+}
 
-// 	// get inputs
-// 	var in []interface{}
-// 	for i := 0; i < t.NumIn(); i++ {
-// 		it := t.In(i)
-// 		switch it.Kind() {
-// 		case reflect.Chan, reflect.Func, reflect.UnsafePointer:
-// 			return fmt.Errorf("input param [%v] %v type not support", i, it.Kind().String())
-// 		}
+func (c *jsonCodec) WriteRequest(req *Request) (err error) {
+	d := struct {
+		Id     int64       `json:"id"`
+		Method string      `json:"method"`
+		Params interface{} `json:"params"`
+	}{
+		req.Id, req.Method, req.Params,
+	}
 
-// 		v := reflect.New(it).Elem()
-// 		in = append(in, v.Interface())
-// 	}
+	err = c.enc.Encode(&d) // encode and write
+	if err != nil {
+		return err
+	}
 
-// 	// get outputs
-// 	var out interface{}
-// 	numOut := t.NumOut() - 1 // ignore the last output param which is known as an error type
-// 	if numOut > 1 {
-// 		return fmt.Errorf("too many output params")
-// 	}
-// 	if numOut == 1 {
-// 		it := t.Out(0)
-// 		v := reflect.New(it).Elem()
-// 		out = v.Interface()
-// 	}
+	return err
+}
 
-// 	// register to codec
-// 	return c.OnRegister(method, in, out)
-// }
+func (c *jsonCodec) WriteResponse(resp *Response) (err error) {
+	d := struct {
+		Id     int64       `json:"id"`
+		Result interface{} `json:"result"`
+		Error  *Error      `json:"error,omitempty"`
+	}{
+		resp.Id, resp.Result, resp.Error,
+	}
+
+	err = c.enc.Encode(&d)
+
+	return err
+}
+
+func (c *jsonCodec) Read() (req *Request, resp *Response, err error) {
+	var r = struct {
+		Id        int64           `json:"id"`
+		Method    string          `json:"method"`
+		RawParams json.RawMessage `json:"params"`
+		RawResult json.RawMessage `json:"result"`
+		Error     *Error          `json:"error"`
+	}{}
+
+	err = c.dec.Decode(&r)
+	if err != nil {
+		return
+	}
+
+	if r.Method != "" { // it's a request
+
+		req = &Request{Id: r.Id, Method: r.Method, Params: r.RawParams}
+
+	} else { // it's a response
+
+		resp = &Response{Id: r.Id, Error: r.Error, Result: r.RawResult}
+	}
+
+	return
+}
+
+func (c *jsonCodec) ParseValue(raw interface{}, ptr interface{}) error {
+	switch v := raw.(type) {
+	case json.RawMessage:
+		return json.Unmarshal(v, ptr)
+	default:
+		return fmt.Errorf("unknonw raw data type")
+	}
+}
+
+func (c *jsonCodec) Close() error {
+	return c.conn.Close()
+}
+
+var _ Codec = (*jsonCodec)(nil)
