@@ -99,7 +99,7 @@ func (c *Client) MakeFunc(method string, fptr interface{}) (err error) {
 	fn.Set(v)
 
 	// register type
-	err = c.codec.OnRegister(method, v.Interface())
+	err = codecRegisterFuncTypes(c.codec, v.Interface())
 	if err != nil {
 		return err
 	}
@@ -111,10 +111,15 @@ func (c *Client) SetTimeout(timeout time.Duration) {
 	c.timeout = timeout
 }
 
-func (c *Client) CallRemote(method string, params []interface{}) (interface{}, error) {
+func (c *Client) CallRemote(method string, params []interface{}, result interface{}) error {
 	codec := c.codec
 	if codec == nil {
-		return nil, ErrDisconnected
+		return ErrDisconnected
+	}
+
+	rv := reflect.TypeOf(result)
+	if rv.Kind() != reflect.Ptr {
+		return fmt.Errorf("result must be a pointer")
 	}
 
 	id := atomic.AddInt64(&c.reqid, 1)
@@ -130,7 +135,7 @@ func (c *Client) CallRemote(method string, params []interface{}) (interface{}, e
 		c.lock.Lock()
 		delete(c.reqMap, id)
 		c.lock.Unlock()
-		return nil, err
+		return err
 	}
 
 	var resp *Response
@@ -142,17 +147,21 @@ func (c *Client) CallRemote(method string, params []interface{}) (interface{}, e
 			c.lock.Lock()
 			delete(c.reqMap, id)
 			c.lock.Unlock()
-			return nil, ErrTimeout
+			return ErrTimeout
 		}
 	} else {
 		resp = <-ch
 	}
 
 	if resp.Error != nil {
-		return nil, resp.Error
+		return resp.Error
 	}
 
-	return resp.Result, nil
+	if result != nil {
+		err = resp.Result(result)
+	}
+
+	return err
 }
 
 func (c *Client) onResponse(resp *Response) error {
@@ -176,9 +185,29 @@ func (c *Client) call(fn reflect.Value, method string, inArgs []reflect.Value) [
 		params[i] = inArgs[i].Interface()
 	}
 
-	out, err := c.CallRemote(method, params)
+	result := c.buildOutValue(fn)
 
-	return c.returnCall(fn, out, err)
+	err := c.CallRemote(method, params, &result)
+
+	return c.returnCall(fn, result, err)
+}
+
+func (c *Client) buildOutValue(fn reflect.Value) interface{} {
+	var outNum = fn.Type().NumOut()
+
+	if outNum < 2 {
+		return nil
+	}
+
+	if outNum != 2 {
+		panic("num of out != 2")
+	}
+
+	outType := fn.Type().Out(0)
+
+	v := reflect.New(outType).Elem()
+
+	return v.Interface()
 }
 
 func (c *Client) returnCall(fn reflect.Value, out interface{}, err error) []reflect.Value {
@@ -189,19 +218,19 @@ func (c *Client) returnCall(fn reflect.Value, out interface{}, err error) []refl
 		return c.returnCallError(fn, err)
 	}
 
-	outv := reflect.ValueOf(out)
-	if outv.Kind() == reflect.Array { // array
-		for i := 0; i < outv.Len(); i++ {
-			outs = append(outs, outv.Index(i))
+	if outNum == 1 {
+		if out != nil {
+			return c.returnCallError(fn, fmt.Errorf("out result is not handled: %v", out))
 		}
-	} else {
-		outs = append(outs, outv)
+		outs = append(outs, reflect.Zero(fn.Type().Out(outNum-1))) // zero value for last error
+		return outs
 	}
-	outs = append(outs, reflect.Zero(fn.Type().Out(outNum-1))) // zero value for last error
 
-	if len(outs) != outNum {
+	if outNum != 2 {
 		return c.returnCallError(fn, fmt.Errorf("invalid out len, %v != %v, %#v", len(outs), outNum, out))
 	}
+	outs = append(outs, reflect.ValueOf(out))
+	outs = append(outs, reflect.Zero(fn.Type().Out(outNum-1)))
 
 	return outs
 }

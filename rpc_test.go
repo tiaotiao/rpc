@@ -15,19 +15,20 @@ func TestRpc(t *testing.T) {
 
 	err = svrRpc.Server.Register(&svrHandler{})
 	if err != nil {
-		t.Fatal(err.Error())
+		t.Error(err.Error())
 	}
 
 	var cli = cliCaller{}
 	err = cliRpc.Client.MakeClient(&cli)
 	if err != nil {
-		t.Fatal(err.Error())
+		t.Error(err.Error())
 	}
 
 	if cli.Echo == nil {
 		t.Fatal("func is nil")
 	}
 
+	// echo
 	str := "abcde"
 	ret, err := cli.Echo(str)
 	if err != nil {
@@ -37,8 +38,23 @@ func TestRpc(t *testing.T) {
 		t.Fatal("not match", str, ret)
 	}
 
+	// deliver
+	err = cli.Deliver(fooType{"foo", 12.34})
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+
 	// TODO more tests
 }
+
+// -----------------------------------------------
+
+type cliCaller struct {
+	Echo    func(i string) (string, error)
+	Deliver func(f fooType) error
+}
+
+// -----------------------------------------------
 
 type svrHandler struct {
 }
@@ -47,8 +63,8 @@ func (h *svrHandler) Echo(s string) (string, error) {
 	return s, nil
 }
 
-type cliCaller struct {
-	Echo func(i string) (string, error)
+func (h *svrHandler) Deliver(f fooType) error {
+	return nil
 }
 
 /////////////////////////////////////////////////////////////////
@@ -89,12 +105,26 @@ func TestRpcCallRemote(t *testing.T) {
 }
 
 func callAndCheck(r *Rpc, method string, params []interface{}, expect interface{}, expErr error) error {
-	out, err := r.Client.CallRemote(method, params)
+
+	var pr interface{}
+
+	if expect != nil {
+		p := reflect.New(reflect.TypeOf(expect))
+		pr = p.Interface()
+	}
+
+	err := r.Client.CallRemote(method, params, pr)
+
 	if !reflect.DeepEqual(err, expErr) {
 		return fmt.Errorf("expErr not match: %#v, %#v", expErr, err)
 	}
-	if !reflect.DeepEqual(expect, out) {
-		return fmt.Errorf("result not match: %#v, %#v", out, expect)
+
+	if expect != nil {
+		out := reflect.ValueOf(pr).Elem().Interface()
+
+		if !reflect.DeepEqual(expect, out) {
+			return fmt.Errorf("result not match: %#v, %#v", out, expect)
+		}
 	}
 	return nil
 }

@@ -29,7 +29,7 @@ func Accept(l net.Listener) (*Rpc, error) {
 }
 
 func NewRpc(conn io.ReadWriteCloser) *Rpc {
-	codec := newDefCodec(conn)
+	codec := NewJsonCodec(conn)
 	return NewRpcWithCodec(codec)
 }
 
@@ -63,33 +63,6 @@ func (r *Rpc) run() error {
 		}
 	}
 	return nil
-}
-
-///////////////////////////////////////////////////////////
-
-type Request struct {
-	Id     int64
-	Method string
-	Params []interface{}
-}
-
-type Response struct {
-	Id     int64
-	Result interface{}
-	Error  *Error
-}
-
-type Error struct {
-	Code    int    `"json:"code"`
-	Message string `"json:"message"`
-}
-
-func NewError(code int, msg string) *Error {
-	return &Error{Code: code, Message: msg}
-}
-
-func (e *Error) Error() string {
-	return e.Message
 }
 
 ///////////////////////////////////////////////////////////

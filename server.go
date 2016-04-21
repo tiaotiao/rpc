@@ -9,14 +9,14 @@ import (
 type Server struct {
 	codec Codec
 
-	funcs map[string]*reflect.Value
+	funcs map[string]reflect.Value
 	lock  sync.RWMutex
 }
 
 func newServerWithCodec(codec Codec) *Server {
 	s := new(Server)
 	s.codec = codec
-	s.funcs = make(map[string]*reflect.Value)
+	s.funcs = make(map[string]reflect.Value)
 	return s
 }
 
@@ -85,7 +85,7 @@ func (s *Server) RegisterFunc(method string, f interface{}) (err error) {
 	}
 
 	// register type
-	err = s.codec.OnRegister(method, f)
+	err = codecRegisterFuncTypes(s.codec, f)
 	if err != nil {
 		return err
 	}
@@ -97,12 +97,25 @@ func (s *Server) RegisterFunc(method string, f interface{}) (err error) {
 		s.lock.Unlock()
 		return
 	}
-	s.funcs[method] = &v
+	s.funcs[method] = v
 	s.lock.Unlock()
 	return
 }
 
-func (s *Server) Handle(method string, params []interface{}) (result interface{}, err error) {
+func (s *Server) onRequest(req *Request) (err error) {
+	result, err := s.handle(req)
+	e, ok := err.(*Error)
+	if !ok {
+		if err != nil {
+			e = NewError(CodeFunctionError, err.Error())
+		} else {
+			e = nil
+		}
+	}
+	return s.codec.WriteResponse(req.Id, result, e) // encode and write
+}
+
+func (s *Server) handle(req *Request) (result interface{}, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			if e, ok := r.(error); ok {
@@ -112,6 +125,9 @@ func (s *Server) Handle(method string, params []interface{}) (result interface{}
 			}
 		}
 	}()
+
+	method := req.Method
+
 	s.lock.RLock()
 	f, ok := s.funcs[method]
 	s.lock.RUnlock()
@@ -120,16 +136,7 @@ func (s *Server) Handle(method string, params []interface{}) (result interface{}
 		return nil, ErrMethodNotFound
 	}
 
-	inValues := make([]reflect.Value, len(params))
-	for i := 0; i < len(params); i++ {
-		if params[i] == nil {
-			inValues[i] = reflect.Zero(f.Type().In(i))
-		} else {
-			inValues[i] = reflect.ValueOf(params[i])
-		}
-	}
-
-	err = s.checkParams(f.Type(), inValues)
+	inValues, err := s.buildInValues(f, req)
 	if err != nil {
 		return nil, ErrInvalidParams
 	}
@@ -137,6 +144,34 @@ func (s *Server) Handle(method string, params []interface{}) (result interface{}
 	outs := f.Call(inValues)
 
 	return s.returnResult(outs)
+}
+
+func (s *Server) buildInValues(fv reflect.Value, req *Request) (inValues []reflect.Value, err error) {
+	f := fv.Type()
+	numIn := f.NumIn()
+	if numIn != req.Len() {
+		return nil, fmt.Errorf("params len=%v error! need %v", req.Len(), numIn)
+	}
+
+	inValues = make([]reflect.Value, numIn)
+	for i := 0; i < numIn; i++ {
+		param := req.params[i]
+
+		if param == nil {
+			inValues[i] = reflect.Zero(f.In(i))
+		} else {
+			pv := reflect.New(f.In(i))
+			v := pv.Interface()
+			err = req.Param(i, v)
+			if err != nil {
+				return nil, err
+			}
+
+			inValues[i] = reflect.ValueOf(pv.Elem().Interface())
+		}
+	}
+
+	return inValues, nil
 }
 
 func (s *Server) returnResult(outs []reflect.Value) (result interface{}, err error) {
@@ -166,32 +201,4 @@ func (s *Server) returnResult(outs []reflect.Value) (result interface{}, err err
 		results[i] = outs[i].Interface()
 	}
 	return results, nil
-}
-
-func (s *Server) onRequest(req *Request) (err error) {
-	result, err := s.Handle(req.Method, req.Params)
-	e, ok := err.(*Error)
-	if !ok {
-		if err != nil {
-			e = NewError(CodeFunctionError, err.Error())
-		} else {
-			e = nil
-		}
-	}
-	return s.codec.WriteResponse(req.Id, result, e) // encode and write
-}
-
-func (s *Server) checkParams(f reflect.Type, inValues []reflect.Value) error {
-	numIn := f.NumIn()
-	if numIn != len(inValues) {
-		return fmt.Errorf("params len=%v error! need %v", inValues, numIn)
-	}
-
-	for i := 0; i < numIn; i++ {
-		p := f.In(i)
-		if !inValues[i].Type().AssignableTo(p) {
-			return fmt.Errorf("param %v (%v) type error! need %v", i, inValues[i].Type().Name(), p.Name())
-		}
-	}
-	return nil
 }
